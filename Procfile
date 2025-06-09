@@ -1,0 +1,1 @@
+web: uvicorn main:app --host 0.0.0.0 --port $PORT --h11-max-incomplete-event-size 16777216 --limit-max-requests 1000 

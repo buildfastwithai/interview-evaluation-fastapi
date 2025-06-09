@@ -707,7 +707,7 @@ async def upload_and_transcribe_audio(
     """
     Upload audio file and transcribe using Whisper, then format with AI
     
-    - **file**: Audio file (mp3, wav, m4a, etc.)
+    - **file**: Audio file (mp3, wav, m4a, etc.) - Max size: 100MB
     - **ai_provider**: Choose between 'openai' or 'gemini'
     - **format_prompt**: Custom prompt for AI formatting
     """
@@ -719,12 +719,31 @@ async def upload_and_transcribe_audio(
         if file_extension not in allowed_extensions:
             raise HTTPException(status_code=400, detail=f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}")
         
+        # Check file size (100MB limit)
+        max_file_size = 100 * 1024 * 1024  # 100MB in bytes
+        file_size = 0
+        file_content = b""
+        
+        # Read file in chunks to get size and content
+        chunk_size = 1024 * 1024  # 1MB chunks
+        while chunk := await file.read(chunk_size):
+            file_size += len(chunk)
+            if file_size > max_file_size:
+                raise HTTPException(
+                    status_code=413, 
+                    detail=f"File too large. Maximum size allowed is 100MB, but file is {file_size / (1024*1024):.1f}MB"
+                )
+            file_content += chunk
+        
+        # Reset file position for processing
+        await file.seek(0)
+        
         # Save uploaded file temporarily
         temp_dir = tempfile.mkdtemp()
         temp_file_path = os.path.join(temp_dir, file.filename)
         
         with open(temp_file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            buffer.write(file_content)
         
         # Transcribe with Whisper
         raw_transcript, num_chunks = transcribe_with_whisper(temp_file_path)
@@ -791,12 +810,31 @@ async def analyze_interview_comprehensive(
                 detail="Currently only OpenAI supports comprehensive structured analysis"
             )
         
+        # Check file size (100MB limit)
+        max_file_size = 100 * 1024 * 1024  # 100MB in bytes
+        file_size = 0
+        file_content = b""
+        
+        # Read file in chunks to get size and content
+        chunk_size = 1024 * 1024  # 1MB chunks
+        while chunk := await file.read(chunk_size):
+            file_size += len(chunk)
+            if file_size > max_file_size:
+                raise HTTPException(
+                    status_code=413, 
+                    detail=f"File too large. Maximum size allowed is 100MB, but file is {file_size / (1024*1024):.1f}MB"
+                )
+            file_content += chunk
+        
+        # Reset file position for processing
+        await file.seek(0)
+        
         # Save uploaded file temporarily
         temp_dir = tempfile.mkdtemp()
         temp_file_path = os.path.join(temp_dir, file.filename)
         
         with open(temp_file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            buffer.write(file_content)
         
         # Step 1: Transcribe with Whisper
         print("Transcribing audio with Whisper...")
