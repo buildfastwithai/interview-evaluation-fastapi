@@ -1,7 +1,7 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, HttpUrl
-from typing import Optional, Literal, List
+from pydantic import BaseModel, HttpUrl, Field
+from typing import Optional, Literal, List, Dict, Union
 import os
 import re
 import tempfile
@@ -14,14 +14,15 @@ import requests
 import json
 import yt_dlp
 import ffmpeg
+from enum import Enum
 
 # Load environment variables
 load_dotenv()
 
 app = FastAPI(
-    title="AI Video Transcript API",
-    description="Lightweight API for video transcript extraction and AI-powered formatting",
-    version="1.0.0"
+    title="AI Interview Analysis API",
+    description="Comprehensive AI-powered interview analysis with skill assessment and insights",
+    version="2.0.0"
 )
 
 # CORS middleware for web applications
@@ -33,11 +34,82 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Pydantic models for request/response
+# Enums for structured responses
+class SkillLevel(str, Enum):
+    BEGINNER = "Beginner"
+    INTERMEDIATE = "Intermediate"
+    ADVANCED = "Advanced"
+    EXPERT = "Expert"
+    NOT_DEMONSTRATED = "Not Demonstrated"
+
+class GradeLevel(str, Enum):
+    EXCELLENT = "Excellent"
+    GOOD = "Good"
+    AVERAGE = "Average"
+    BELOW_AVERAGE = "Below Average"
+    POOR = "Poor"
+
+# Enhanced Pydantic models
+class SkillAssessment(BaseModel):
+    skill: str
+    level: SkillLevel
+    confidence_score: float = Field(..., ge=0, le=100, description="Confidence score from 0-100")
+    evidence: str = Field(..., description="Evidence from transcript supporting this assessment")
+    recommendations: str = Field(..., description="Recommendations for improvement")
+
+class QuestionAnswer(BaseModel):
+    question: str
+    answer: str
+    grade: GradeLevel
+    score: float = Field(..., ge=0, le=100, description="Numerical score from 0-100")
+    feedback: str = Field(..., description="Detailed feedback on the answer")
+    key_points_covered: List[str] = Field(default_factory=list)
+    areas_for_improvement: List[str] = Field(default_factory=list)
+
+class InterviewInsights(BaseModel):
+    overall_performance_score: float = Field(..., ge=0, le=100)
+    communication_clarity: float = Field(..., ge=0, le=100)
+    technical_depth: float = Field(..., ge=0, le=100)
+    problem_solving_ability: float = Field(..., ge=0, le=100)
+    confidence_level: float = Field(..., ge=0, le=100)
+    
+    strengths: List[str] = Field(default_factory=list)
+    weaknesses: List[str] = Field(default_factory=list)
+    key_achievements_mentioned: List[str] = Field(default_factory=list)
+    red_flags: List[str] = Field(default_factory=list)
+    
+    interview_duration_analysis: str
+    speech_patterns: str
+    engagement_level: str
+    cultural_fit_indicators: List[str] = Field(default_factory=list)
+    
+    hiring_recommendation: str
+    next_steps: List[str] = Field(default_factory=list)
+
 class TranscriptRequest(BaseModel):
     video_url: str
     ai_provider: Literal["openai", "gemini"] = "openai"
     format_prompt: Optional[str] = "Please format this transcript into a clear, well-structured summary with key points and main topics."
+
+class InterviewAnalysisRequest(BaseModel):
+    skills_to_assess: List[str] = Field(..., description="Comma-separated skills to assess")
+    job_role: Optional[str] = "Software Developer"
+    company_name: Optional[str] = "Company"
+    ai_provider: Literal["openai", "gemini"] = "openai"
+
+class ComprehensiveAnalysisResponse(BaseModel):
+    video_id: Optional[str] = None
+    filename: Optional[str] = None
+    raw_transcript: str
+    formatted_transcript: str
+    ai_provider: str
+    file_chunks: Optional[int] = None
+    
+    # Enhanced analysis
+    skill_assessments: List[SkillAssessment]
+    questions_and_answers: List[QuestionAnswer]
+    interview_insights: InterviewInsights
+    analysis_summary: str
 
 class TranscriptResponse(BaseModel):
     video_id: Optional[str] = None
@@ -245,6 +317,333 @@ def format_with_gemini(transcript: str, prompt: str) -> str:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gemini API error: {str(e)}")
 
+def validate_transcript_quality(transcript: str) -> tuple[bool, str]:
+    """Validate if transcript is suitable for analysis"""
+    if not transcript or len(transcript.strip()) < 50:
+        return False, "Transcript too short for meaningful analysis"
+    
+    # Check for common transcription errors
+    error_indicators = ["[inaudible]", "[unclear]", "???", "..." * 3]
+    error_count = sum(transcript.lower().count(indicator) for indicator in error_indicators)
+    
+    if error_count > len(transcript.split()) * 0.1:  # More than 10% errors
+        return False, "Transcript quality too poor for reliable analysis"
+    
+    # Check if it looks like an interview (has questions)
+    question_indicators = ["?", "tell me", "describe", "explain", "what is", "how do", "why"]
+    has_questions = any(indicator in transcript.lower() for indicator in question_indicators)
+    
+    if not has_questions:
+        return False, "Content does not appear to be an interview format"
+    
+    return True, "Transcript quality acceptable"
+
+def assess_skills_with_openai(transcript: str, skills: List[str], job_role: str = "Software Developer") -> List[SkillAssessment]:
+    """Assess skills from transcript using OpenAI structured response"""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
+    
+    client = openai.OpenAI(api_key=api_key)
+    
+    # Validate inputs
+    if not skills:
+        raise HTTPException(status_code=400, detail="No skills provided for assessment")
+    
+    if len(skills) > 20:
+        raise HTTPException(status_code=400, detail="Too many skills requested. Maximum 20 skills allowed.")
+    
+    skills_text = ", ".join(skills)
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4.1",  # Using GPT-4 for better analysis
+            messages=[
+                {
+                    "role": "system", 
+                    "content": f"""You are an expert technical interviewer analyzing a {job_role} interview transcript. 
+                    Assess each skill based on evidence in the transcript. Be thorough but fair in your assessment.
+                    If a skill is not mentioned or demonstrated, mark it as 'Not Demonstrated'.
+                    Provide specific evidence and actionable recommendations."""
+                },
+                {
+                    "role": "user", 
+                    "content": f"""Please assess the following skills based on this interview transcript: {skills_text}
+
+For each skill, provide:
+1. Skill level (Beginner/Intermediate/Advanced/Expert/Not Demonstrated)
+2. Confidence score (0-100)
+3. Specific evidence from the transcript
+4. Recommendations for improvement
+
+Transcript:
+{transcript}"""
+                }
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "skill_assessment",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "assessments": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "skill": {"type": "string"},
+                                        "level": {
+                                            "type": "string",
+                                            "enum": ["Beginner", "Intermediate", "Advanced", "Expert", "Not Demonstrated"]
+                                        },
+                                        "confidence_score": {"type": "number", "minimum": 0, "maximum": 100},
+                                        "evidence": {"type": "string"},
+                                        "recommendations": {"type": "string"}
+                                    },
+                                    "required": ["skill", "level", "confidence_score", "evidence", "recommendations"]
+                                }
+                            }
+                        },
+                        "required": ["assessments"]
+                    }
+                }
+            },
+            temperature=0.3
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        
+        # Validate and convert to SkillAssessment objects
+        skill_assessments = []
+        for assessment in result["assessments"]:
+            try:
+                skill_assessments.append(SkillAssessment(**assessment))
+            except Exception as e:
+                print(f"Error parsing skill assessment: {e}")
+                continue
+        
+        return skill_assessments
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Skill assessment error: {str(e)}")
+
+def extract_qa_with_openai(transcript: str, job_role: str = "Software Developer") -> List[QuestionAnswer]:
+    """Extract and grade Q&A pairs from transcript using OpenAI"""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
+    
+    client = openai.OpenAI(api_key=api_key)
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4.1",
+            messages=[
+                {
+                    "role": "system", 
+                    "content": f"""You are an expert technical interviewer analyzing a {job_role} interview transcript.
+                    Extract all question-answer pairs and grade each answer objectively.
+                    Focus on technical accuracy, communication clarity, and completeness of answers."""
+                },
+                {
+                    "role": "user", 
+                    "content": f"""Please extract all interview questions and answers from this transcript and grade each answer.
+
+For each Q&A pair, provide:
+1. The exact question asked
+2. The candidate's complete answer
+3. Grade (Excellent/Good/Average/Below Average/Poor)
+4. Numerical score (0-100)
+5. Detailed feedback
+6. Key points the candidate covered well
+7. Areas for improvement
+
+Transcript:
+{transcript}"""
+                }
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "qa_extraction",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "qa_pairs": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "question": {"type": "string"},
+                                        "answer": {"type": "string"},
+                                        "grade": {
+                                            "type": "string",
+                                            "enum": ["Excellent", "Good", "Average", "Below Average", "Poor"]
+                                        },
+                                        "score": {"type": "number", "minimum": 0, "maximum": 100},
+                                        "feedback": {"type": "string"},
+                                        "key_points_covered": {
+                                            "type": "array",
+                                            "items": {"type": "string"}
+                                        },
+                                        "areas_for_improvement": {
+                                            "type": "array",
+                                            "items": {"type": "string"}
+                                        }
+                                    },
+                                    "required": ["question", "answer", "grade", "score", "feedback", "key_points_covered", "areas_for_improvement"]
+                                }
+                            }
+                        },
+                        "required": ["qa_pairs"]
+                    }
+                }
+            },
+            temperature=0.3
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        
+        # Validate and convert to QuestionAnswer objects
+        qa_pairs = []
+        for qa in result["qa_pairs"]:
+            try:
+                qa_pairs.append(QuestionAnswer(**qa))
+            except Exception as e:
+                print(f"Error parsing Q&A pair: {e}")
+                continue
+        
+        return qa_pairs
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Q&A extraction error: {str(e)}")
+
+def generate_interview_insights_with_openai(transcript: str, job_role: str = "Software Developer") -> InterviewInsights:
+    """Generate comprehensive interview insights using OpenAI"""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
+    
+    client = openai.OpenAI(api_key=api_key)
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4.1",
+            messages=[
+                {
+                    "role": "system", 
+                    "content": f"""You are a senior HR professional and technical interview expert analyzing a {job_role} interview.
+                    Provide comprehensive insights covering all aspects of the candidate's performance.
+                    Be objective, constructive, and provide actionable feedback."""
+                },
+                {
+                    "role": "user", 
+                    "content": f"""Please provide a comprehensive analysis of this interview transcript including:
+
+1. Overall performance metrics (0-100 scores)
+2. Strengths and weaknesses
+3. Communication and technical analysis
+4. Cultural fit indicators
+5. Red flags or concerns
+6. Hiring recommendation
+7. Next steps
+
+Transcript:
+{transcript}"""
+                }
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "interview_insights",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "overall_performance_score": {"type": "number", "minimum": 0, "maximum": 100},
+                            "communication_clarity": {"type": "number", "minimum": 0, "maximum": 100},
+                            "technical_depth": {"type": "number", "minimum": 0, "maximum": 100},
+                            "problem_solving_ability": {"type": "number", "minimum": 0, "maximum": 100},
+                            "confidence_level": {"type": "number", "minimum": 0, "maximum": 100},
+                            "strengths": {"type": "array", "items": {"type": "string"}},
+                            "weaknesses": {"type": "array", "items": {"type": "string"}},
+                            "key_achievements_mentioned": {"type": "array", "items": {"type": "string"}},
+                            "red_flags": {"type": "array", "items": {"type": "string"}},
+                            "interview_duration_analysis": {"type": "string"},
+                            "speech_patterns": {"type": "string"},
+                            "engagement_level": {"type": "string"},
+                            "cultural_fit_indicators": {"type": "array", "items": {"type": "string"}},
+                            "hiring_recommendation": {"type": "string"},
+                            "next_steps": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "required": [
+                            "overall_performance_score", "communication_clarity", "technical_depth",
+                            "problem_solving_ability", "confidence_level", "strengths", "weaknesses",
+                            "key_achievements_mentioned", "red_flags", "interview_duration_analysis",
+                            "speech_patterns", "engagement_level", "cultural_fit_indicators",
+                            "hiring_recommendation", "next_steps"
+                        ]
+                    }
+                }
+            },
+            temperature=0.3
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        return InterviewInsights(**result)
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Interview insights generation error: {str(e)}")
+
+def generate_analysis_summary_with_openai(
+    skill_assessments: List[SkillAssessment], 
+    qa_pairs: List[QuestionAnswer], 
+    insights: InterviewInsights,
+    job_role: str = "Software Developer"
+) -> str:
+    """Generate a comprehensive analysis summary"""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
+    
+    client = openai.OpenAI(api_key=api_key)
+    
+    # Prepare summary data
+    avg_skill_score = sum(sa.confidence_score for sa in skill_assessments) / len(skill_assessments) if skill_assessments else 0
+    avg_qa_score = sum(qa.score for qa in qa_pairs) / len(qa_pairs) if qa_pairs else 0
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {
+                    "role": "system", 
+                    "content": f"You are an expert HR analyst creating an executive summary for a {job_role} interview analysis."
+                },
+                {
+                    "role": "user", 
+                    "content": f"""Create a comprehensive executive summary based on this interview analysis:
+
+Average Skill Assessment Score: {avg_skill_score:.1f}/100
+Average Q&A Performance Score: {avg_qa_score:.1f}/100
+Overall Performance Score: {insights.overall_performance_score}/100
+
+Key Strengths: {', '.join(insights.strengths[:3])}
+Key Weaknesses: {', '.join(insights.weaknesses[:3])}
+Hiring Recommendation: {insights.hiring_recommendation}
+
+Please provide a 2-3 paragraph executive summary suitable for hiring managers."""
+                }
+            ],
+            max_tokens=500,
+            temperature=0.7
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        return f"Summary generation failed: {str(e)}"
+
 # API Endpoints
 @app.get("/", response_model=HealthResponse)
 async def root():
@@ -299,8 +698,6 @@ async def extract_and_format_transcript(request: TranscriptRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-
-
 @app.post("/upload-audio", response_model=TranscriptResponse)
 async def upload_and_transcribe_audio(
     file: UploadFile = File(...),
@@ -350,6 +747,206 @@ async def upload_and_transcribe_audio(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing audio file: {str(e)}")
+
+@app.post("/analyze-interview", response_model=ComprehensiveAnalysisResponse)
+async def analyze_interview_comprehensive(
+    file: UploadFile = File(...),
+    skills_to_assess: str = Form(..., description="Comma-separated list of skills to assess"),
+    job_role: str = Form(default="Software Developer", description="Job role for context"),
+    company_name: str = Form(default="Company", description="Company name for context"),
+    ai_provider: Literal["openai", "gemini"] = Form(default="openai")
+):
+    """
+    Comprehensive interview analysis with skill assessment, Q&A extraction, and insights
+    
+    - **file**: Audio/Video file containing the interview
+    - **skills_to_assess**: Comma-separated skills to evaluate (e.g., "Python, React, Problem Solving, Communication")
+    - **job_role**: Job role for context in analysis
+    - **company_name**: Company name for context
+    - **ai_provider**: AI provider for analysis (currently only OpenAI supports structured responses)
+    """
+    try:
+        # Validate file type
+        allowed_extensions = {'.mp3', '.wav', '.m4a', '.mp4', '.avi', '.mov', '.webm', '.mkv'}
+        file_extension = os.path.splitext(file.filename)[1].lower()
+        
+        if file_extension not in allowed_extensions:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}"
+            )
+        
+        # Parse and validate skills
+        skills_list = [skill.strip() for skill in skills_to_assess.split(',') if skill.strip()]
+        if not skills_list:
+            raise HTTPException(status_code=400, detail="At least one skill must be provided")
+        
+        if len(skills_list) > 20:
+            raise HTTPException(status_code=400, detail="Maximum 20 skills allowed per analysis")
+        
+        # Validate AI provider for structured responses
+        if ai_provider != "openai":
+            raise HTTPException(
+                status_code=400, 
+                detail="Currently only OpenAI supports comprehensive structured analysis"
+            )
+        
+        # Save uploaded file temporarily
+        temp_dir = tempfile.mkdtemp()
+        temp_file_path = os.path.join(temp_dir, file.filename)
+        
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Step 1: Transcribe with Whisper
+        print("Transcribing audio with Whisper...")
+        raw_transcript, num_chunks = transcribe_with_whisper(temp_file_path)
+        
+        # Step 2: Validate transcript quality
+        is_valid, validation_message = validate_transcript_quality(raw_transcript)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Transcript validation failed: {validation_message}")
+        
+        # Step 3: Format transcript
+        print("Formatting transcript...")
+        formatted_transcript = format_with_openai(
+            raw_transcript, 
+            f"Please format this {job_role} interview transcript for {company_name} into a clear, well-structured format with proper paragraphs and speaker identification where possible."
+        )
+        
+        # Step 4: Parallel analysis (can be done concurrently)
+        print("Performing comprehensive analysis...")
+        
+        # Run analyses in parallel for efficiency
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            # Submit all analysis tasks
+            skill_future = executor.submit(assess_skills_with_openai, raw_transcript, skills_list, job_role)
+            qa_future = executor.submit(extract_qa_with_openai, raw_transcript, job_role)
+            insights_future = executor.submit(generate_interview_insights_with_openai, raw_transcript, job_role)
+            
+            # Wait for all to complete
+            skill_assessments = skill_future.result()
+            questions_and_answers = qa_future.result()
+            interview_insights = insights_future.result()
+        
+        # Step 5: Generate executive summary
+        print("Generating analysis summary...")
+        analysis_summary = generate_analysis_summary_with_openai(
+            skill_assessments, questions_and_answers, interview_insights, job_role
+        )
+        
+        # Step 6: Return comprehensive response
+        return ComprehensiveAnalysisResponse(
+            filename=file.filename,
+            raw_transcript=raw_transcript,
+            formatted_transcript=formatted_transcript,
+            ai_provider=ai_provider,
+            file_chunks=num_chunks,
+            skill_assessments=skill_assessments,
+            questions_and_answers=questions_and_answers,
+            interview_insights=interview_insights,
+            analysis_summary=analysis_summary
+        )
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        # Handle unexpected errors
+        raise HTTPException(status_code=500, detail=f"Error during comprehensive analysis: {str(e)}")
+
+@app.post("/analyze-interview-url", response_model=ComprehensiveAnalysisResponse)
+async def analyze_interview_from_url(
+    video_url: str = Form(..., description="Video URL (YouTube, etc.)"),
+    skills_to_assess: str = Form(..., description="Comma-separated list of skills to assess"),
+    job_role: str = Form(default="Software Developer", description="Job role for context"),
+    company_name: str = Form(default="Company", description="Company name for context"),
+    ai_provider: Literal["openai", "gemini"] = Form(default="openai")
+):
+    """
+    Comprehensive interview analysis from video URL with skill assessment and insights
+    
+    - **video_url**: Video URL (YouTube, Vimeo, etc.)
+    - **skills_to_assess**: Comma-separated skills to evaluate
+    - **job_role**: Job role for context in analysis
+    - **company_name**: Company name for context
+    - **ai_provider**: AI provider for analysis
+    """
+    try:
+        # Parse and validate skills
+        skills_list = [skill.strip() for skill in skills_to_assess.split(',') if skill.strip()]
+        if not skills_list:
+            raise HTTPException(status_code=400, detail="At least one skill must be provided")
+        
+        if len(skills_list) > 20:
+            raise HTTPException(status_code=400, detail="Maximum 20 skills allowed per analysis")
+        
+        # Validate AI provider
+        if ai_provider != "openai":
+            raise HTTPException(
+                status_code=400, 
+                detail="Currently only OpenAI supports comprehensive structured analysis"
+            )
+        
+        # Extract video ID for reference
+        video_id = extract_video_id_from_url(video_url)
+        
+        # Step 1: Download and transcribe
+        print("Downloading and transcribing video...")
+        audio_file_path = download_audio_from_url(video_url)
+        raw_transcript, num_chunks = transcribe_with_whisper(audio_file_path)
+        
+        # Step 2: Validate transcript quality
+        is_valid, validation_message = validate_transcript_quality(raw_transcript)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Transcript validation failed: {validation_message}")
+        
+        # Step 3: Format transcript
+        print("Formatting transcript...")
+        formatted_transcript = format_with_openai(
+            raw_transcript, 
+            f"Please format this {job_role} interview transcript for {company_name} into a clear, well-structured format."
+        )
+        
+        # Step 4: Comprehensive analysis
+        print("Performing comprehensive analysis...")
+        
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            skill_future = executor.submit(assess_skills_with_openai, raw_transcript, skills_list, job_role)
+            qa_future = executor.submit(extract_qa_with_openai, raw_transcript, job_role)
+            insights_future = executor.submit(generate_interview_insights_with_openai, raw_transcript, job_role)
+            
+            skill_assessments = skill_future.result()
+            questions_and_answers = qa_future.result()
+            interview_insights = insights_future.result()
+        
+        # Step 5: Generate summary
+        analysis_summary = generate_analysis_summary_with_openai(
+            skill_assessments, questions_and_answers, interview_insights, job_role
+        )
+        
+        return ComprehensiveAnalysisResponse(
+            video_id=video_id,
+            raw_transcript=raw_transcript,
+            formatted_transcript=formatted_transcript,
+            ai_provider=ai_provider,
+            file_chunks=num_chunks,
+            skill_assessments=skill_assessments,
+            questions_and_answers=questions_and_answers,
+            interview_insights=interview_insights,
+            analysis_summary=analysis_summary
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error analyzing video URL: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

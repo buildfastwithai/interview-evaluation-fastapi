@@ -1,219 +1,260 @@
-# AI Video Transcript API
+# AI Interview Analysis Platform
 
-A lightweight FastAPI application for extracting video transcripts using OpenAI Whisper and formatting them with AI models.
+A comprehensive AI-powered platform for interview analysis with skill assessment, Q&A grading, and detailed insights. Also supports general video transcription and formatting.
 
 ## Features
 
-- 🎥 **Universal Video Support**: Extract transcripts from any video URL using OpenAI Whisper
-- ✂️ **Smart File Splitting**: Automatically handles large files by splitting into 25MB chunks
-- 📁 **Direct File Upload**: Upload audio/video files directly for transcription
-- 🤖 **AI Formatting**: Format transcripts using OpenAI GPT-3.5-turbo or Google Gemini
-- 🚀 **Lightweight & Fast**: Optimized for deployment with minimal dependencies
-- 🔐 **Secure**: Proper API key management and error handling
-- 📝 **Customizable**: Custom formatting prompts for different use cases
-- 🌐 **CORS Enabled**: Ready for web applications
+### 🎯 Comprehensive Interview Analysis
+
+- **Skill Assessment**: Evaluate specific skills with confidence scores and evidence
+- **Q&A Extraction**: Automatic extraction and grading of interview questions and answers
+- **Performance Insights**: Detailed analysis including communication clarity, technical depth, and hiring recommendations
+- **Structured AI Responses**: Uses OpenAI's structured output for consistent, reliable analysis
+
+### 📝 Transcript Extraction
+
+- **Multi-format Support**: MP3, WAV, M4A, MP4, AVI, MOV, WebM, MKV
+- **YouTube Integration**: Direct URL processing for YouTube videos
+- **AI-Powered Formatting**: Clean, readable transcript formatting
+- **Chunked Processing**: Handles large files by splitting into manageable chunks
+
+### 🤖 AI Providers
+
+- **OpenAI**: Whisper for transcription, GPT-4 for analysis (recommended for structured responses)
+- **Google Gemini**: Alternative AI provider for basic formatting
 
 ## Quick Start
 
-### 1. Install Dependencies
+### Backend Setup
+
+1. **Install Dependencies**
 
 ```bash
-pip install -r requirements.txt
+pip install fastapi uvicorn python-multipart openai google-generativeai yt-dlp ffmpeg-python python-dotenv
 ```
 
-### 2. Configure API Keys
-
-Create a `.env` file in the root directory:
+2. **Environment Configuration**
+   Create a `.env` file:
 
 ```bash
 OPENAI_API_KEY=your_openai_api_key_here
-GEMINI_API_KEY=your_gemini_api_key_here  # Optional, for Gemini formatting
+GEMINI_API_KEY=your_gemini_api_key_here  # Optional
 ```
 
-### 3. Run the Application
+3. **Run the FastAPI Server**
 
 ```bash
-# Development
 python main.py
-
-# Production with uvicorn
-uvicorn main:app --host 0.0.0.0 --port 8000
+# Server will start on http://localhost:8000
 ```
 
-### 4. Test the API
+### Frontend Setup
+
+1. **Navigate to Frontend Directory**
 
 ```bash
-python test_api.py
+cd frontend
+```
+
+2. **Install Dependencies**
+
+```bash
+npm install
+```
+
+3. **Environment Configuration**
+   Create a `.env.local` file:
+
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+4. **Run the Development Server**
+
+```bash
+npm run dev
+# Frontend will start on http://localhost:3000
 ```
 
 ## API Endpoints
 
-### Health Check
+### 📊 Interview Analysis
 
-```http
-GET /
-GET /health
-```
+#### `POST /analyze-interview`
 
-### Extract and Format Transcript
+Comprehensive interview analysis with skill assessment and insights.
 
-```http
-POST /extract-transcript
-Content-Type: application/json
+**Parameters:**
 
-{
-  "video_url": "https://www.youtube.com/watch?v=VIDEO_ID",
-  "ai_provider": "openai",  // or "gemini"
-  "format_prompt": "Summarize this transcript into key points"
-}
-```
+- `file`: Audio/video file (multipart/form-data)
+- `skills_to_assess`: Comma-separated skills list (form field)
+- `job_role`: Job role for context (form field, default: "Software Developer")
+- `company_name`: Company name for context (form field, default: "Company")
+- `ai_provider`: AI provider (form field, default: "openai")
 
-### Upload Audio File
-
-```http
-POST /upload-audio
-Content-Type: multipart/form-data
-
-file: [audio/video file]
-ai_provider: "openai"  // or "gemini"
-format_prompt: "Summarize this content"
-```
-
-## Example Usage
-
-### Using cURL
+**Example Request:**
 
 ```bash
-# Extract and format transcript
-curl -X POST "http://localhost:8000/extract-transcript" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    "ai_provider": "openai",
-    "format_prompt": "Create a bullet-point summary of the main topics discussed"
-  }'
-
-# Upload audio file
-curl -X POST "http://localhost:8000/upload-audio" \
-  -F "file=@audio.mp3" \
-  -F "ai_provider=openai" \
-  -F "format_prompt=Summarize this audio content"
+curl -X POST "http://localhost:8000/analyze-interview" \
+  -F "file=@interview.mp3" \
+  -F "skills_to_assess=Python,React,Problem Solving,Communication" \
+  -F "job_role=Senior Developer" \
+  -F "company_name=Tech Corp"
 ```
 
-### Using Python requests
-
-```python
-import requests
-
-response = requests.post(
-    "http://localhost:8000/extract-transcript",
-    json={
-        "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-        "ai_provider": "openai",
-        "format_prompt": "Provide a detailed analysis of the content"
-    }
-)
-
-result = response.json()
-print(result["formatted_response"])
-```
-
-## Response Format
+**Response Structure:**
 
 ```json
 {
-  "video_id": "dQw4w9WgXcQ",
-  "filename": null,
-  "raw_transcript": "Original transcript text...",
-  "formatted_response": "AI-formatted response...",
+  "filename": "interview.mp3",
+  "raw_transcript": "...",
+  "formatted_transcript": "...",
   "ai_provider": "openai",
-  "file_chunks": 3
+  "file_chunks": 2,
+  "skill_assessments": [
+    {
+      "skill": "Python",
+      "level": "Advanced",
+      "confidence_score": 85,
+      "evidence": "Demonstrated strong knowledge...",
+      "recommendations": "Consider exploring..."
+    }
+  ],
+  "questions_and_answers": [
+    {
+      "question": "Tell me about your Python experience",
+      "answer": "I have been working with Python...",
+      "grade": "Good",
+      "score": 78,
+      "feedback": "Good technical explanation...",
+      "key_points_covered": ["Experience", "Projects"],
+      "areas_for_improvement": ["More specific examples"]
+    }
+  ],
+  "interview_insights": {
+    "overall_performance_score": 75,
+    "communication_clarity": 80,
+    "technical_depth": 70,
+    "problem_solving_ability": 85,
+    "confidence_level": 75,
+    "strengths": ["Clear communication", "Strong technical knowledge"],
+    "weaknesses": ["Could provide more examples"],
+    "hiring_recommendation": "Recommend for hire with considerations...",
+    "next_steps": ["Technical deep-dive interview", "Reference checks"]
+  },
+  "analysis_summary": "Executive summary of the analysis..."
 }
 ```
 
-### Response Fields
+#### `POST /analyze-interview-url`
 
-- `video_id`: YouTube video ID (if applicable)
-- `filename`: Original filename (for uploaded files)
-- `raw_transcript`: Complete transcribed text
-- `formatted_response`: AI-formatted and summarized content
-- `ai_provider`: AI service used for formatting
-- `file_chunks`: Number of chunks the file was split into (for large files)
+Same as above but accepts a video URL instead of file upload.
 
-## Key Features
+**Parameters:**
 
-### 🔧 Smart File Handling
+- `video_url`: Video URL (YouTube, etc.)
+- `skills_to_assess`: Comma-separated skills list
+- `job_role`: Job role for context
+- `company_name`: Company name for context
+- `ai_provider`: AI provider
 
-- **Automatic Splitting**: Files larger than 25MB are automatically split into chunks
-- **Chunk Processing**: Each chunk is transcribed separately with Whisper
-- **Seamless Merging**: All transcriptions are combined into a single coherent text
-- **Clean Cleanup**: Temporary files and chunks are automatically removed
+### 📝 General Transcription
 
-### 🎯 Whisper Transcription
+#### `POST /extract-transcript`
 
-- **High Accuracy**: Uses OpenAI's Whisper API for superior transcription quality
-- **Universal Support**: Works with any audio/video format supported by yt-dlp
-- **No Caption Dependency**: Doesn't rely on existing captions or subtitles
-- **Language Detection**: Automatic language detection and transcription
+Extract and format transcript from video URL.
 
-### 🤖 AI Formatting Options
+#### `POST /upload-audio`
 
-- **OpenAI GPT-3.5**: Fast and cost-effective formatting
-- **Google Gemini**: Alternative AI provider for formatting
-- **Custom Prompts**: Tailor the formatting to your specific needs
-- **Flexible Output**: Summaries, bullet points, analysis, or any custom format
+Upload audio file for transcription and formatting.
 
-### Environment Variables
+## Skill Assessment Levels
 
-- `OPENAI_API_KEY`: Your OpenAI API key (required)
-- `GEMINI_API_KEY`: Your Google Gemini API key (optional)
-- `PORT`: Server port (default: 8000)
-- `HOST`: Server host (default: 0.0.0.0)
+- **Expert**: Demonstrates mastery and deep understanding
+- **Advanced**: Strong knowledge with practical application
+- **Intermediate**: Good understanding with some gaps
+- **Beginner**: Basic knowledge, needs development
+- **Not Demonstrated**: Skill not shown in the interview
 
-## Supported Platforms
+## Q&A Grading Scale
 
-- **Video Platforms**: YouTube, Vimeo, and any platform supported by yt-dlp
-- **File Formats**: MP3, WAV, M4A, MP4, AVI, MOV, WebM
-- **File Sizes**: Any size (automatically split if needed)
-- **Languages**: Any language supported by OpenAI Whisper
+- **Excellent (90-100)**: Outstanding answer with depth and clarity
+- **Good (70-89)**: Solid answer covering key points
+- **Average (50-69)**: Adequate answer with room for improvement
+- **Below Average (30-49)**: Weak answer missing key elements
+- **Poor (0-29)**: Inadequate or incorrect answer
+
+## Performance Metrics
+
+The system evaluates candidates across multiple dimensions:
+
+- **Overall Performance**: Comprehensive score (0-100)
+- **Communication Clarity**: How well the candidate communicates
+- **Technical Depth**: Level of technical knowledge demonstrated
+- **Problem Solving**: Ability to think through problems
+- **Confidence Level**: Candidate's confidence and self-assurance
+
+## Best Practices
+
+### For Accurate Analysis
+
+1. **Clear Audio Quality**: Ensure good audio quality for better transcription
+2. **Specific Skills**: List specific, relevant skills for assessment
+3. **Proper Context**: Provide accurate job role and company information
+4. **Interview Structure**: Well-structured interviews yield better analysis
+
+### Skill Input Examples
+
+- **Technical**: "Python, JavaScript, React, SQL, AWS, Docker"
+- **Soft Skills**: "Communication, Leadership, Problem Solving, Teamwork"
+- **Domain-Specific**: "Machine Learning, Data Analysis, System Design"
+
+## Limitations
+
+- Currently optimized for English-language interviews
+- Works best with structured interview formats
+- Requires OpenAI API for comprehensive analysis features
+- Analysis quality depends on audio quality and interview content
 
 ## Error Handling
 
-The API provides detailed error messages for:
+The API includes comprehensive error handling:
 
-- Invalid video URLs
-- Unsupported file formats
-- API key configuration issues
-- File size and processing errors
-- Network and download issues
+- File format validation
+- Transcript quality validation
+- Skill count limits (max 20 skills)
+- AI provider compatibility checks
+- Structured response validation
 
-## Testing
+## Security Considerations
 
-Run the comprehensive test suite:
+- Files are processed temporarily and cleaned up automatically
+- No permanent storage of audio/video files
+- API keys should be secured and rotated regularly
+- Consider rate limiting for production deployments
 
-```bash
-python test_api.py
-```
+## Development
 
-Tests include:
+### Adding New Analysis Features
 
-- Health check verification
-- Whisper transcription with short videos
-- Full pipeline testing (download → transcribe → format)
-- File chunking for large files
+1. Define new Pydantic models in `main.py`
+2. Create analysis functions using OpenAI structured responses
+3. Update the response models to include new data
+4. Add frontend components to display new insights
 
-## Performance Notes
+### Custom AI Prompts
 
-- **Cost Optimization**: Uses GPT-3.5-turbo for formatting (cheaper than GPT-4)
-- **File Splitting**: Handles large files without hitting API limits
-- **Cleanup**: Automatic temporary file cleanup to save disk space
-- **Async**: FastAPI provides async support for better performance
+The system uses carefully crafted prompts for each analysis type. You can customize these prompts in the respective functions to better suit your interview style or requirements.
 
-## Troubleshooting
+## Contributing
 
-### Common Issues
+Contributions are welcome! Please ensure:
 
-1. **FFmpeg not found**: Install ffmpeg on your system
-2. **API key errors**: Ensure `OPENAI_API_KEY` is set in `.env`
-3. **File too large**: The API automatically handles this with chunking
-4. **Video unavailable**: Some videos may be private or restricted
+- Add appropriate error handling
+- Include type hints and documentation
+- Test with various file formats and interview styles
+- Follow the existing code structure and patterns
+
+## License
+
+MIT License - see LICENSE file for details.
