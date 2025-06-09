@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
+export const maxDuration = 299;
+
 const BUCKET_NAME = process.env.DIGITAL_OCEAN_SPACES_BUCKET_NAME!;
 const ENDPOINT = process.env.DIGITAL_OCEAN_SPACES_ENDPOINT!;
 

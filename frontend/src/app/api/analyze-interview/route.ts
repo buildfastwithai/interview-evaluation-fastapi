@@ -1,3 +1,5 @@
+export const maxDuration = 299;
+
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
