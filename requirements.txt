@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+openai
+google-generativeai
+python-dotenv
+requests
+pydantic
+yt-dlp
+ffmpeg-python
