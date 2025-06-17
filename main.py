@@ -849,7 +849,7 @@ async def analyze_interview_comprehensive(
         print("Formatting transcript...")
         formatted_transcript = format_with_openai(
             raw_transcript, 
-            f"Please format this {job_role} interview transcript for {company_name} into a clear, well-structured format with proper paragraphs and speaker identification where possible."
+            f"Please format this {job_role} interview transcript for {company_name} into a clear, well-structured format with proper paragraphs and speaker identification where possible, Dont include any other text in the response, just the formatted transcript. Dont use markdown formatting."
         )
         
         # Step 4: Parallel analysis (can be done concurrently)
@@ -985,6 +985,117 @@ async def analyze_interview_from_url(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error analyzing video URL: {str(e)}")
+
+@app.post("/analyze-transcript", response_model=ComprehensiveAnalysisResponse)
+async def analyze_transcript(
+    file: UploadFile = File(...),
+    skills_to_assess: str = Form(..., description="Comma-separated list of skills to assess"),
+    job_role: str = Form(default="Software Developer", description="Job role for context"),
+    company_name: str = Form(default="Company", description="Company name for context"),
+    ai_provider: Literal["openai", "gemini"] = Form(default="openai")
+):
+    """
+    Comprehensive interview analysis from transcript text
+    
+    - **file**: Text file containing the interview transcript
+    - **skills_to_assess**: Comma-separated skills to evaluate
+    - **job_role**: Job role for context in analysis
+    - **company_name**: Company name for context
+    - **ai_provider**: AI provider for analysis
+    """
+    try:
+        # Parse and validate skills
+        skills_list = [skill.strip() for skill in skills_to_assess.split(',') if skill.strip()]
+        if not skills_list:
+            raise HTTPException(status_code=400, detail="At least one skill must be provided")
+        
+        if len(skills_list) > 20:
+            raise HTTPException(status_code=400, detail="Maximum 20 skills allowed per analysis")
+        
+        # Validate AI provider
+        if ai_provider != "openai":
+            raise HTTPException(
+                status_code=400, 
+                detail="Currently only OpenAI supports comprehensive structured analysis"
+            )
+        
+        # Save uploaded file temporarily
+        temp_dir = tempfile.mkdtemp()
+        temp_file_path = os.path.join(temp_dir, file.filename)
+        
+        with open(temp_file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+        
+        # Read the text file
+        try:
+            with open(temp_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                raw_transcript = f.read()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error reading transcript file: {str(e)}")
+        
+        # Step 1: Validate transcript quality
+        is_valid, validation_message = validate_transcript_quality(raw_transcript)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Transcript validation failed: {validation_message}")
+        
+        # Step 2: Format transcript
+        print("Formatting transcript...")
+        formatted_transcript = format_with_openai(
+            raw_transcript, 
+            f"Please format this {job_role} interview transcript for {company_name} into a clear, well-structured format with proper paragraphs and speaker identification where possible, Dont include any other text in the response, just the formatted transcript. Dont use markdown formatting."
+        )
+        
+        # Step 3: Parallel analysis (can be done concurrently)
+        print("Performing comprehensive analysis...")
+        
+        # Run analyses in parallel for efficiency
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            # Submit all analysis tasks
+            skill_future = executor.submit(assess_skills_with_openai, raw_transcript, skills_list, job_role)
+            qa_future = executor.submit(extract_qa_with_openai, raw_transcript, job_role)
+            insights_future = executor.submit(generate_interview_insights_with_openai, raw_transcript, job_role)
+            
+            # Wait for all to complete
+            skill_assessments = skill_future.result()
+            questions_and_answers = qa_future.result()
+            interview_insights = insights_future.result()
+        
+        # Step 4: Generate executive summary
+        print("Generating analysis summary...")
+        analysis_summary = generate_analysis_summary_with_openai(
+            skill_assessments, questions_and_answers, interview_insights, job_role
+        )
+        
+        # Step 5: Return comprehensive response
+        return ComprehensiveAnalysisResponse(
+            filename=file.filename,
+            raw_transcript=raw_transcript,
+            formatted_transcript=formatted_transcript,
+            ai_provider=ai_provider,
+            file_chunks=1,  # Since we're not chunking the transcript
+            skill_assessments=skill_assessments,
+            questions_and_answers=questions_and_answers,
+            interview_insights=interview_insights,
+            analysis_summary=analysis_summary
+        )
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        # Handle unexpected errors
+        raise HTTPException(status_code=500, detail=f"Error during transcript analysis: {str(e)}")
+    finally:
+        # Clean up temporary files
+        try:
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+        except Exception as cleanup_error:
+            print(f"Warning: Cleanup failed: {cleanup_error}")
 
 if __name__ == "__main__":
     import uvicorn
