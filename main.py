@@ -289,7 +289,7 @@ def format_with_openai(transcript: str, prompt: str) -> str:
     
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that formats and summarizes video transcripts."},
                 {"role": "user", "content": f"{prompt}\n\nTranscript:\n{transcript}"}
@@ -614,7 +614,7 @@ def generate_analysis_summary_with_openai(
     
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4.1",
             messages=[
                 {
                     "role": "system", 
