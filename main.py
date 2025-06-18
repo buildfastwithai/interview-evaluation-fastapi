@@ -15,6 +15,8 @@ import json
 import yt_dlp
 import ffmpeg
 from enum import Enum
+import PyPDF2
+import io
 
 # Load environment variables
 load_dotenv()
@@ -122,6 +124,34 @@ class TranscriptResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     message: str
+
+# New models for PDF comparison
+class ComparisonRequest(BaseModel):
+    original_analysis_url: HttpUrl
+    ai_analysis_url: HttpUrl
+
+class ComparisonSummary(BaseModel):
+    overall_comparison: str
+    agreement_score: float = Field(..., ge=0, le=100, description="Agreement score from 0-100")
+    key_similarities: List[str]
+    key_differences: List[str]
+
+class DetailedComparison(BaseModel):
+    category: str
+    original: str
+    ai_generated: str
+    comparison: str
+
+class ComparisonRecommendations(BaseModel):
+    overall: str
+    original_strengths: List[str]
+    ai_strengths: List[str]
+    improvement_suggestions: List[str]
+
+class ComparisonResponse(BaseModel):
+    summary: ComparisonSummary
+    detailed_comparison: List[DetailedComparison]
+    recommendations: ComparisonRecommendations
 
 # Utility functions
 def extract_video_id_from_url(url: str) -> Optional[str]:
@@ -644,6 +674,219 @@ Please provide a 2-3 paragraph executive summary suitable for hiring managers.""
     except Exception as e:
         return f"Summary generation failed: {str(e)}"
 
+def extract_text_from_pdf(file_content: bytes) -> str:
+    """Extract text from a PDF file using PyPDF2"""
+    try:
+        # Create a PDF reader object
+        pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
+        
+        # Extract text from all pages
+        text = []
+        for page in pdf_reader.pages:
+            text.append(page.extract_text())
+        
+        # Join all text together
+        full_text = "\n".join(text)
+        
+        # Basic cleanup
+        # Remove excessive newlines
+        full_text = re.sub(r'\n{3,}', '\n\n', full_text)
+        # Remove excessive whitespace
+        full_text = re.sub(r'\s{2,}', ' ', full_text)
+        
+        return full_text.strip()
+    except Exception as e:
+        raise Exception(f"Failed to extract text from PDF: {str(e)}")
+
+# Additional utility functions for PDF comparison
+def download_pdf_from_url(url: str) -> bytes:
+    """Download PDF file from URL"""
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            raise Exception(f"Failed to download PDF. Status code: {response.status_code}")
+        
+        return response.content
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to download PDF: {str(e)}")
+
+def compare_analyses_with_openai(original_text: str, ai_text: str) -> ComparisonResponse:
+    """Compare two interview analysis texts using OpenAI"""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
+    
+    client = openai.OpenAI(api_key=api_key)
+    
+    try:
+        # Generate summary comparison
+        summary_response = client.chat.completions.create(
+            model="gpt-4.1",
+            messages=[
+                {
+                    "role": "system", 
+                    "content": """You are an expert at comparing interview analyses. 
+                    Compare the original human analysis with the AI-generated analysis of the same interview transcript.
+                    Provide a fair, objective comparison highlighting similarities, differences, strengths and weaknesses of each approach."""
+                },
+                {
+                    "role": "user", 
+                    "content": f"""I have two analyses of the same interview transcript:
+                    
+                    ORIGINAL HUMAN ANALYSIS:
+                    {original_text}
+                    
+                    AI-GENERATED ANALYSIS:
+                    {ai_text}
+                    
+                    Please provide a summary comparison with:
+                    1. Overall comparison
+                    2. Agreement score (0-100%)
+                    3. Key similarities (list)
+                    4. Key differences (list)"""
+                }
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "summary_comparison",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "overall_comparison": {"type": "string"},
+                            "agreement_score": {"type": "number", "minimum": 0, "maximum": 100},
+                            "key_similarities": {"type": "array", "items": {"type": "string"}},
+                            "key_differences": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "required": ["overall_comparison", "agreement_score", "key_similarities", "key_differences"]
+                    }
+                }
+            },
+            temperature=0.5
+        )
+        
+        summary = json.loads(summary_response.choices[0].message.content)
+        
+        # Generate detailed category comparisons
+        detailed_response = client.chat.completions.create(
+            model="gpt-4.1",
+            messages=[
+                {
+                    "role": "system", 
+                    "content": """You are an expert at comparing interview analyses in detail.
+                    Compare the original human analysis with the AI-generated analysis across multiple categories.
+                    For each category, extract the relevant sections from each analysis and provide a detailed comparison."""
+                },
+                {
+                    "role": "user", 
+                    "content": f"""Compare these two analyses of the same interview transcript:
+                    
+                    ORIGINAL HUMAN ANALYSIS:
+                    {original_text}
+                    
+                    AI-GENERATED ANALYSIS:
+                    {ai_text}
+                    
+                    Please compare across these categories:
+                    1. Technical Skills Assessment
+                    2. Communication Skills
+                    3. Problem-solving Abilities
+                    4. Overall Performance
+                    5. Recommendations
+                    
+                    For each category, provide:
+                    - The relevant section from the original analysis
+                    - The relevant section from the AI analysis
+                    - A detailed comparison between them"""
+                }
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "detailed_comparison",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "detailed_comparison": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "category": {"type": "string"},
+                                        "original": {"type": "string"},
+                                        "ai_generated": {"type": "string"},
+                                        "comparison": {"type": "string"}
+                                    },
+                                    "required": ["category", "original", "ai_generated", "comparison"]
+                                }
+                            }
+                        },
+                        "required": ["detailed_comparison"]
+                    }
+                }
+            },
+            temperature=0.5
+        )
+        
+        detailed = json.loads(detailed_response.choices[0].message.content)
+        
+        # Generate recommendations
+        recommendations_response = client.chat.completions.create(
+            model="gpt-4.1",
+            messages=[
+                {
+                    "role": "system", 
+                    "content": """You are an expert at evaluating interview analyses.
+                    After comparing the original human analysis with the AI-generated analysis, provide recommendations and insights.
+                    Be fair, objective, and constructive."""
+                },
+                {
+                    "role": "user", 
+                    "content": f"""Based on these two analyses of the same interview transcript:
+                    
+                    ORIGINAL HUMAN ANALYSIS:
+                    {original_text}
+                    
+                    AI-GENERATED ANALYSIS:
+                    {ai_text}
+                    
+                    Please provide:
+                    1. Overall recommendation and insights
+                    2. Strengths of the original human analysis
+                    3. Strengths of the AI-generated analysis
+                    4. Suggestions for improving both approaches"""
+                }
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "comparison_recommendations",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "overall": {"type": "string"},
+                            "original_strengths": {"type": "array", "items": {"type": "string"}},
+                            "ai_strengths": {"type": "array", "items": {"type": "string"}},
+                            "improvement_suggestions": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "required": ["overall", "original_strengths", "ai_strengths", "improvement_suggestions"]
+                    }
+                }
+            },
+            temperature=0.5
+        )
+        
+        recommendations = json.loads(recommendations_response.choices[0].message.content)
+        
+        return ComparisonResponse(
+            summary=ComparisonSummary(**summary),
+            detailed_comparison=detailed["detailed_comparison"],
+            recommendations=ComparisonRecommendations(**recommendations)
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Comparison analysis error: {str(e)}")
+
 # API Endpoints
 @app.get("/", response_model=HealthResponse)
 async def root():
@@ -997,7 +1240,7 @@ async def analyze_transcript(
     """
     Comprehensive interview analysis from transcript text
     
-    - **file**: Text file containing the interview transcript
+    - **file**: Text file containing the interview transcript or PDF file
     - **skills_to_assess**: Comma-separated skills to evaluate
     - **job_role**: Job role for context in analysis
     - **company_name**: Company name for context
@@ -1023,16 +1266,19 @@ async def analyze_transcript(
         temp_dir = tempfile.mkdtemp()
         temp_file_path = os.path.join(temp_dir, file.filename)
         
+        content = await file.read()
         with open(temp_file_path, "wb") as buffer:
-            content = await file.read()
             buffer.write(content)
         
-        # Read the text file
+        # Read the text or PDF file
         try:
-            with open(temp_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                raw_transcript = f.read()
+            if file.filename.lower().endswith('.pdf'):
+                raw_transcript = extract_text_from_pdf(content)
+            else:
+                with open(temp_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    raw_transcript = f.read()
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Error reading transcript file: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Error reading file: {str(e)}")
         
         # Step 1: Validate transcript quality
         is_valid, validation_message = validate_transcript_quality(raw_transcript)
@@ -1096,6 +1342,48 @@ async def analyze_transcript(
                 shutil.rmtree(temp_dir)
         except Exception as cleanup_error:
             print(f"Warning: Cleanup failed: {cleanup_error}")
+
+@app.post("/compare-analyses", response_model=ComparisonResponse)
+async def compare_pdf_analyses(
+    original_analysis: UploadFile = File(...),
+    ai_analysis: UploadFile = File(...),
+):
+    """
+    Compare original and AI-generated interview analyses
+    
+    - **original_analysis**: PDF file with original human analysis
+    - **ai_analysis**: PDF file with AI-generated analysis
+    """
+    try:
+        # Read uploaded files
+        original_content = await original_analysis.read()
+        await original_analysis.seek(0)  # Reset file pointer
+        
+        ai_content = await ai_analysis.read()
+        await ai_analysis.seek(0)  # Reset file pointer
+        
+        # Extract text from PDFs
+        original_text = extract_text_from_pdf(original_content)
+        ai_text = extract_text_from_pdf(ai_content)
+        
+        # Validate extracted text
+        if len(original_text) < 100 or len(ai_text) < 100:
+            raise HTTPException(
+                status_code=400, 
+                detail="Failed to extract sufficient text from one or both PDFs"
+            )
+        
+        # Compare analyses using OpenAI
+        comparison_result = compare_analyses_with_openai(original_text, ai_text)
+        
+        return comparison_result
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        # Handle unexpected errors
+        raise HTTPException(status_code=500, detail=f"Error comparing analyses: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
