@@ -27,9 +27,9 @@ import time
 load_dotenv()
 
 # Global timeout configurations
-OPENAI_TIMEOUT = 300  # 5 minutes for OpenAI API calls
+OPENAI_TIMEOUT = 600  # 10 minutes for OpenAI API calls
 WHISPER_TIMEOUT = 600  # 10 minutes for Whisper transcription
-DOWNLOAD_TIMEOUT = 300  # 5 minutes for video downloads
+DOWNLOAD_TIMEOUT = 600  # 10 minutes for video downloads
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 
 app = FastAPI(
