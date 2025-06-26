@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, HttpUrl, Field
 from typing import Optional, Literal, List, Dict, Union
 import os
@@ -17,9 +18,19 @@ import ffmpeg
 from enum import Enum
 import PyPDF2
 import io
+import asyncio
+import aiofiles
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+import time
 
 # Load environment variables
 load_dotenv()
+
+# Global timeout configurations
+OPENAI_TIMEOUT = 300  # 5 minutes for OpenAI API calls
+WHISPER_TIMEOUT = 600  # 10 minutes for Whisper transcription
+DOWNLOAD_TIMEOUT = 300  # 5 minutes for video downloads
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 
 app = FastAPI(
     title="AI Interview Analysis API",
@@ -169,12 +180,12 @@ def extract_video_id_from_url(url: str) -> Optional[str]:
     return None
 
 def download_audio_from_url(video_url: str) -> str:
-    """Download audio from video URL using yt-dlp"""
+    """Download audio from video URL using yt-dlp with timeout"""
     try:
         # Create temporary directory
         temp_dir = tempfile.mkdtemp()
         
-        # Configure yt-dlp options with error handling
+        # Configure yt-dlp options with error handling and timeout
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': os.path.join(temp_dir, 'audio.%(ext)s'),
@@ -185,11 +196,31 @@ def download_audio_from_url(video_url: str) -> str:
             }],
             'quiet': True,
             'no_warnings': True,
+            'socket_timeout': DOWNLOAD_TIMEOUT,
+            'retries': 3,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
-                info = ydl.extract_info(video_url, download=True)
+                # Set a timeout for the download
+                import signal
+                
+                def timeout_handler(signum, frame):
+                    raise TimeoutError("Download timeout")
+                
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(DOWNLOAD_TIMEOUT)
+                
+                try:
+                    info = ydl.extract_info(video_url, download=True)
+                finally:
+                    signal.alarm(0)  # Cancel the alarm
+                    
+            except TimeoutError:
+                raise HTTPException(
+                    status_code=408, 
+                    detail="Video download timeout. Please try with a shorter video or check the URL."
+                )
             except Exception as download_error:
                 raise Exception(f"Download failed: {str(download_error)}")
             
@@ -198,14 +229,16 @@ def download_audio_from_url(video_url: str) -> str:
         for file in os.listdir(temp_dir):
             if file.endswith(('.mp3', '.m4a', '.webm', '.ogg')):
                 audio_files.append(os.path.join(temp_dir, file))
-                
-        if not audio_files:
-            raise Exception("No audio file found after download. The video might not be available or accessible.")
-            
-        return audio_files[0]  # Return the first audio file found
         
+        if not audio_files:
+            raise Exception("No audio file found after download")
+        
+        return audio_files[0]
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not download audio from {video_url}. Error: {str(e)}")
+        raise Exception(f"Audio download error: {str(e)}")
 
 def split_audio_file(audio_file_path: str, max_size_mb: int = 25) -> List[str]:
     """Split audio file into chunks if it's larger than max_size_mb"""
@@ -256,12 +289,12 @@ def split_audio_file(audio_file_path: str, max_size_mb: int = 25) -> List[str]:
     return chunk_files
 
 def transcribe_with_whisper(audio_file_path: str) -> tuple[str, int]:
-    """Transcribe audio file using OpenAI Whisper API, handling large files"""
+    """Transcribe audio file using OpenAI Whisper API, handling large files with timeout"""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
     
-    client = openai.OpenAI(api_key=api_key)
+    client = openai.OpenAI(api_key=api_key, timeout=WHISPER_TIMEOUT)
     
     try:
         # Split file if needed
@@ -271,19 +304,34 @@ def transcribe_with_whisper(audio_file_path: str) -> tuple[str, int]:
         for i, chunk_file in enumerate(chunk_files):
             print(f"Transcribing chunk {i+1}/{len(chunk_files)}...")
             
-            with open(chunk_file, "rb") as audio_file:
-                response = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    response_format="text"
+            try:
+                with open(chunk_file, "rb") as audio_file:
+                    response = client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        response_format="text"
+                    )
+                    transcriptions.append(response)
+            except TimeoutError:
+                raise HTTPException(
+                    status_code=408, 
+                    detail=f"Transcription timeout for chunk {i+1}. Please try with a shorter audio file."
                 )
-                transcriptions.append(response)
+            except Exception as chunk_error:
+                print(f"Error transcribing chunk {i+1}: {chunk_error}")
+                # Continue with other chunks instead of failing completely
+                transcriptions.append(f"[Error transcribing chunk {i+1}]")
         
         # Combine all transcriptions
         full_transcript = " ".join(transcriptions)
         
+        if not full_transcript.strip():
+            raise HTTPException(status_code=500, detail="No transcript generated. Please check the audio file.")
+        
         return full_transcript, len(chunk_files)
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Whisper transcription error: {str(e)}")
     finally:
@@ -310,16 +358,16 @@ def transcribe_with_whisper(audio_file_path: str) -> tuple[str, int]:
             print(f"Warning: Cleanup failed: {cleanup_error}")
 
 def format_with_openai(transcript: str, prompt: str) -> str:
-    """Format transcript using OpenAI API"""
+    """Format transcript using OpenAI API with timeout"""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
     
-    client = openai.OpenAI(api_key=api_key)
+    client = openai.OpenAI(api_key=api_key, timeout=OPENAI_TIMEOUT)
     
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1",
+            model="gpt-4",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that formats and summarizes video transcripts."},
                 {"role": "user", "content": f"{prompt}\n\nTranscript:\n{transcript}"}
@@ -328,6 +376,8 @@ def format_with_openai(transcript: str, prompt: str) -> str:
             temperature=0.7
         )
         return response.choices[0].message.content
+    except TimeoutError:
+        raise HTTPException(status_code=408, detail="OpenAI API timeout. Please try again.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenAI API error: {str(e)}")
 
@@ -898,11 +948,28 @@ async def root():
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Detailed health check"""
-    return HealthResponse(
-        status="healthy",
-        message="All systems operational"
-    )
+    """Health check endpoint for monitoring"""
+    try:
+        # Quick API key check
+        openai_key = os.getenv("OPENAI_API_KEY")
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        
+        status = "healthy"
+        message = "API is running normally"
+        
+        if not openai_key and not gemini_key:
+            status = "warning"
+            message = "No API keys configured"
+        elif not openai_key:
+            status = "warning"
+            message = "OpenAI API key not configured"
+        elif not gemini_key:
+            status = "warning"
+            message = "Gemini API key not configured"
+            
+        return HealthResponse(status=status, message=message)
+    except Exception as e:
+        return HealthResponse(status="error", message=f"Health check failed: {str(e)}")
 
 @app.post("/extract-transcript", response_model=TranscriptResponse)
 async def extract_and_format_transcript(request: TranscriptRequest):
@@ -1099,9 +1166,6 @@ async def analyze_interview_comprehensive(
         print("Performing comprehensive analysis...")
         
         # Run analyses in parallel for efficiency
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
-        
         with ThreadPoolExecutor(max_workers=3) as executor:
             # Submit all analysis tasks
             skill_future = executor.submit(assess_skills_with_openai, raw_transcript, skills_list, job_role)
@@ -1194,9 +1258,6 @@ async def analyze_interview_from_url(
         
         # Step 4: Comprehensive analysis
         print("Performing comprehensive analysis...")
-        
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
         
         with ThreadPoolExecutor(max_workers=3) as executor:
             skill_future = executor.submit(assess_skills_with_openai, raw_transcript, skills_list, job_role)
@@ -1296,9 +1357,6 @@ async def analyze_transcript(
         print("Performing comprehensive analysis...")
         
         # Run analyses in parallel for efficiency
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
-        
         with ThreadPoolExecutor(max_workers=3) as executor:
             # Submit all analysis tasks
             skill_future = executor.submit(assess_skills_with_openai, raw_transcript, skills_list, job_role)
@@ -1384,6 +1442,53 @@ async def compare_pdf_analyses(
     except Exception as e:
         # Handle unexpected errors
         raise HTTPException(status_code=500, detail=f"Error comparing analyses: {str(e)}")
+
+@app.post("/extract-transcript-stream")
+async def extract_and_format_transcript_stream(request: TranscriptRequest):
+    """
+    Stream transcript extraction with progress updates to prevent timeouts
+    """
+    async def generate_progress():
+        try:
+            # Step 1: Download audio
+            yield f"data: {json.dumps({'step': 'downloading', 'message': 'Downloading audio from video...'})}\n\n"
+            
+            audio_file_path = download_audio_from_url(request.video_url)
+            
+            # Step 2: Transcribe
+            yield f"data: {json.dumps({'step': 'transcribing', 'message': 'Transcribing audio with Whisper...'})}\n\n"
+            
+            raw_transcript, num_chunks = transcribe_with_whisper(audio_file_path)
+            
+            # Step 3: Format with AI
+            yield f"data: {json.dumps({'step': 'formatting', 'message': 'Formatting transcript with AI...'})}\n\n"
+            
+            if request.ai_provider == "openai":
+                formatted_response = format_with_openai(raw_transcript, request.format_prompt)
+            elif request.ai_provider == "gemini":
+                formatted_response = format_with_gemini(raw_transcript, request.format_prompt)
+            else:
+                raise HTTPException(status_code=400, detail="Invalid AI provider")
+            
+            # Step 4: Return final result
+            result = TranscriptResponse(
+                video_id=extract_video_id_from_url(request.video_url),
+                raw_transcript=raw_transcript,
+                formatted_response=formatted_response,
+                ai_provider=request.ai_provider,
+                file_chunks=num_chunks
+            )
+            
+            yield f"data: {json.dumps({'step': 'complete', 'result': result.dict()})}\n\n"
+            
+        except Exception as e:
+            yield f"data: {json.dumps({'step': 'error', 'error': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        generate_progress(),
+        media_type="text/plain",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    )
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,1 +1,1 @@
-web: uvicorn main:app --host 0.0.0.0 --port $PORT --h11-max-incomplete-event-size 16777216 --limit-max-requests 1000 
+web: uvicorn main:app --host 0.0.0.0 --port $PORT --h11-max-incomplete-event-size 16777216 --limit-max-requests 1000 --limit-concurrency 50 --timeout-keep-alive 60 --timeout-graceful-shutdown 60 --access-log --log-level info 
